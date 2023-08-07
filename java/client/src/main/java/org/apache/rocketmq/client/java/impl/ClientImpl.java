@@ -631,41 +631,55 @@ public abstract class ClientImpl extends AbstractIdleService implements Client, 
     }
 
     protected ListenableFuture<TopicRouteData> getRouteData(final String topic) {
+        // 首先创建一个SettableFuture<TopicRouteData>对象future0，用于表示未来的结果
         SettableFuture<TopicRouteData> future0 = SettableFuture.create();
+        // 检查topicRouteCache中是否已经缓存了topic对应的TopicRouteData对象
         TopicRouteData topicRouteData = topicRouteCache.get(topic);
         // If route result was cached before, get it directly.
         if (null != topicRouteData) {
+            // 如果已经缓存，则将缓存的TopicRouteData对象设置为future0的结果，并直接返回future0。
             future0.set(topicRouteData);
             return future0;
         }
+        // 获取一个锁inflightRouteFutureLock，确保线程安全
         inflightRouteFutureLock.lock();
         try {
             // If route was fetched by last in-flight request, get it directly.
             topicRouteData = topicRouteCache.get(topic);
+            // 如果在获取锁的过程中，其他线程已经更新了缓存，则将更新后的TopicRouteData对象设置为future0的结果，并直接返回future0
             if (null != topicRouteData) {
                 future0.set(topicRouteData);
                 return future0;
             }
+            // 检查inflightRouteFutureTable中是否已经存在正在处理中的请求
             Set<SettableFuture<TopicRouteData>> inflightFutures = inflightRouteFutureTable.get(topic);
             // Request is in-flight, return future directly.
             if (null != inflightFutures) {
+                // 如果存在，则将future0添加到对应topic的SettableFuture集合中，并直接返回future0
                 inflightFutures.add(future0);
                 return future0;
             }
+            // 如果不存在正在处理中的请求，则创建一个新的HashSet对象inflightFutures，将future0添加到其中，
             inflightFutures = new HashSet<>();
             inflightFutures.add(future0);
+            // 并将inflightFutures添加到inflightRouteFutureTable中，以便其他请求可以共享这个future0。
             inflightRouteFutureTable.put(topic, inflightFutures);
         } finally {
+            // 释放锁inflightRouteFutureLock
             inflightRouteFutureLock.unlock();
         }
+        // 调用fetchTopicRoute(topic)方法异步获取topic的TopicRouteData对象
+        // 并返回一个ListenableFuture<TopicRouteData>对象future
         final ListenableFuture<TopicRouteData> future = fetchTopicRoute(topic);
         Futures.addCallback(future, new FutureCallback<TopicRouteData>() {
             @Override
             public void onSuccess(TopicRouteData topicRouteData) {
                 inflightRouteFutureLock.lock();
                 try {
+                    // 从inflightRouteFutureTable中移除topic对应的SettableFuture集合，并将其赋值给newFutureSet。
                     final Set<SettableFuture<TopicRouteData>> newFutureSet =
                         inflightRouteFutureTable.remove(topic);
+                    // 检查newFutureSet是否为null，如果为null，则记录错误日志
                     if (null == newFutureSet) {
                         // Should never reach here.
                         log.error("[Bug] in-flight route futures was empty, topic={}, clientId={}", topic,
@@ -674,6 +688,7 @@ public abstract class ClientImpl extends AbstractIdleService implements Client, 
                     }
                     log.debug("Fetch topic route successfully, topic={}, in-flight route future "
                         + "size={}, clientId={}", topic, newFutureSet.size(), clientId);
+                    // 遍历newFutureSet，将topicRouteData设置为每个SettableFuture对象的结果
                     for (SettableFuture<TopicRouteData> newFuture : newFutureSet) {
                         newFuture.set(topicRouteData);
                     }
@@ -699,6 +714,7 @@ public abstract class ClientImpl extends AbstractIdleService implements Client, 
                     }
                     log.debug("Failed to fetch topic route, topic={}, in-flight route future " +
                         "size={}, clientId={}", topic, newFutureSet.size(), clientId, t);
+                    // 遍历newFutureSet，将异常对象t设置为每个SettableFuture对象的异常结果。
                     for (SettableFuture<TopicRouteData> future : newFutureSet) {
                         future.setException(t);
                     }
@@ -706,6 +722,7 @@ public abstract class ClientImpl extends AbstractIdleService implements Client, 
                     inflightRouteFutureLock.unlock();
                 }
             }
+        // 使用MoreExecutors.directExecutor()作为回调的执行器
         }, MoreExecutors.directExecutor());
         return future0;
     }

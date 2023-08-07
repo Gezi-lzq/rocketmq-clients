@@ -334,10 +334,11 @@ class ProducerImpl extends ClientImpl implements Producer {
                 this.state(), clientId);
             return future;
         }
-
+        // 创建一个空的ArrayList<PublishingMessageImpl>对象pubMessages，用于存储经过处理的消息
         List<PublishingMessageImpl> pubMessages = new ArrayList<>();
         for (Message message : messages) {
             try {
+                // 遍历messages中的每个消息，将其转换为PublishingMessageImpl对象，并添加到pubMessages中
                 final PublishingMessageImpl pubMessage = new PublishingMessageImpl(message, publishingSettings,
                     txEnabled);
                 pubMessages.add(pubMessage);
@@ -359,7 +360,7 @@ class ProducerImpl extends ClientImpl implements Producer {
                 topics, clientId);
             return future;
         }
-
+        // 获取唯一的主题topic
         final String topic = topics.iterator().next();
         // Collect message types.
         final Set<MessageType> messageTypes = pubMessages.stream()
@@ -380,6 +381,7 @@ class ProducerImpl extends ClientImpl implements Producer {
 
         // Message group must be same if message type is FIFO, or no need to proceed.
         if (MessageType.FIFO.equals(messageType)) {
+            // 对于FIFO消息类型，收集所有消息的消息组，并存储在一个Set<String>对象messageGroups中
             final Set<String> messageGroups = pubMessages.stream()
                 .map(PublishingMessageImpl::getMessageGroup).filter(Optional::isPresent)
                 .map(Optional::get).collect(Collectors.toSet());
@@ -396,7 +398,7 @@ class ProducerImpl extends ClientImpl implements Producer {
         } else {
             messageGroup = null;
         }
-
+        // 将topic添加到topics集合中，表示此主题正在发送消息
         this.topics.add(topic);
         // Get publishing topic route.
         final ListenableFuture<PublishingLoadBalancer> routeFuture = getPublishingLoadBalancer(topic);
@@ -501,38 +503,50 @@ class ProducerImpl extends ClientImpl implements Producer {
 
                 // Collect messageId(s) for logging.
                 List<MessageId> messageIds = new ArrayList<>();
+                // 循环遍历messages列表，收集每个消息的messageId，并存储在messageIds列表中，用于日志记录
                 for (PublishingMessageImpl message : messages) {
                     messageIds.add(message.getMessageId());
                 }
                 // Isolate endpoints because of sending failure.
+                // Isolate the current endpoint for publishing.
                 isolate(endpoints);
+                // Return failure and end the current process if the attempt times is run out,
+                // otherwirse deecide to retry or not according to the error type.
                 if (attempt >= maxAttempts) {
                     // No need more attempts.
                     future0.setException(t);
                     log.error("Failed to send message(s) finally, run out of attempt times, maxAttempts={}, " +
                             "attempt={}, topic={}, messageId(s)={}, endpoints={}, clientId={}",
                         maxAttempts, attempt, topic, messageIds, endpoints, clientId, t);
+                    // Return failure and end the current process if there is no need to retry, otherwise go to the next step.
                     return;
                 }
                 // No need more attempts for transactional message.
+                // 对于事务消息（MessageType.TRANSACTION），不再进行更多的attempts
                 if (MessageType.TRANSACTION.equals(messageType)) {
                     future0.setException(t);
                     log.error("Failed to send transactional message finally, maxAttempts=1, attempt={}, " +
                             "topic={}, messageId(s)={}, endpoints={}, clientId={}", attempt, topic, messageIds,
                         endpoints, clientId, t);
+                    // Return failure and end the current process if there is no need to retry, otherwise go to the next step.
                     return;
                 }
                 // Try to do more attempts.
                 int nextAttempt = 1 + attempt;
                 // Retry immediately if the request is not throttled.
+                // 如果请求未被限流（t不是TooManyRequestsException类型），则立即重试发送消息
                 if (!(t instanceof TooManyRequestsException)) {
                     log.warn("Failed to send message, would attempt to resend right now, maxAttempts={}, "
                             + "attempt={}, topic={}, messageId(s)={}, endpoints={}, clientId={}", maxAttempts, attempt,
                         topic, messageIds, endpoints, clientId, t);
+                    // Rotate to next message queue to publish message, and go to send step
                     send0(future0, topic, messageType, candidates, messages, nextAttempt);
                     return;
                 }
+                // 如果请求被限流（t是TooManyRequestsException类型）
+                // 根据重试策略获取下一次重试的延迟时间delay。
                 final Duration delay = ProducerImpl.this.getRetryPolicy().getNextAttemptDelay(nextAttempt);
+                // 记录警告日志指出由于请求过多而发送消息失败，并在延迟时间后调度重新发送消息的操作。
                 log.warn("Failed to send message due to too many requests, would attempt to resend after {}, "
                         + "maxAttempts={}, attempt={}, topic={}, messageId(s)={}, endpoints={}, clientId={}", delay,
                     maxAttempts, attempt, topic, messageIds, endpoints, clientId, t);
@@ -556,11 +570,21 @@ class ProducerImpl extends ClientImpl implements Producer {
     }
 
     private ListenableFuture<PublishingLoadBalancer> getPublishingLoadBalancer(final String topic) {
+        // 尝试从publishingRouteDataCache中获取已缓存的与topic相关的PublishingLoadBalancer对象
         final PublishingLoadBalancer loadBalancer = publishingRouteDataCache.get(topic);
         if (null != loadBalancer) {
+            // 表示缓存中存在对应的LoadBalancer，
+            // 那么直接使用Futures.immediateFuture(loadBalancer)将其包装成已完成的ListenableFuture对象，并立即返回
             return Futures.immediateFuture(loadBalancer);
         }
-        return Futures.transform(getRouteData(topic), topicRouteData -> updatePublishingLoadBalancer(topic,
-            topicRouteData), MoreExecutors.directExecutor());
+        // 对上一步的异步操作结果进行转换，当异步操作成功完成后，会执行给定的转换函数来更新发布LoadBalancer
+        return Futures.transform(
+                // 调用getRouteData(topic)方法获取与topic相关的路由数据（TopicRouteData）的异步操作的ListenableFuture对象
+                getRouteData(topic),
+                // 使用lambda表达式，接受topicRouteData作为参数
+                // 调用updatePublishingLoadBalancer()方法进行LoadBalancer的更新
+                topicRouteData -> updatePublishingLoadBalancer(topic, topicRouteData),
+                // 作为执行转换函数的执行器
+                MoreExecutors.directExecutor());
     }
 }
