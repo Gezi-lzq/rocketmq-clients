@@ -90,7 +90,7 @@ import org.slf4j.LoggerFactory;
 @SuppressWarnings({"UnstableApiUsage", "NullableProblems"})
 class PushConsumerImpl extends ConsumerImpl implements PushConsumer {
     private static final Logger log = LoggerFactory.getLogger(PushConsumerImpl.class);
-
+    // 定义消费成功和消费失败的消息数量
     final AtomicLong consumptionOkQuantity;
     final AtomicLong consumptionErrorQuantity;
 
@@ -103,6 +103,7 @@ class PushConsumerImpl extends ConsumerImpl implements PushConsumer {
     private final int maxCacheMessageCount;
     private final int maxCacheMessageSizeInBytes;
 
+    // 定义用于统计消息接收次数和接收消息数量的计数器
     /**
      * Indicates the times of message reception.
      */
@@ -163,6 +164,7 @@ class PushConsumerImpl extends ConsumerImpl implements PushConsumer {
             final ScheduledExecutorService scheduler = this.getClientManager().getScheduler();
             this.consumeService = createConsumeService();
             // Scan assignments periodically.
+            // 使用定时任务定期调用scanAssignments()方法来获取最新的队列分配
             scanAssignmentsFuture = scheduler.scheduleWithFixedDelay(() -> {
                 try {
                     scanAssignments();
@@ -326,34 +328,41 @@ class PushConsumerImpl extends ConsumerImpl implements PushConsumer {
 
     @VisibleForTesting
     void syncProcessQueue(String topic, Assignments assignments, FilterExpression filterExpression) {
+        // 创建一个新的集合用于存储最新的消息队列
         Set<MessageQueueImpl> latest = new HashSet<>();
 
+        // 获取最新的分配情况中的消息队列，并添加到latest集合中
         final List<Assignment> assignmentList = assignments.getAssignmentList();
         for (Assignment assignment : assignmentList) {
             latest.add(assignment.getMessageQueue());
         }
-
+        // 创建一个新的集合用于存储活跃的消息队列
         Set<MessageQueueImpl> activeMqs = new HashSet<>();
 
+        // 遍历当前的消息处理队列表
         for (Map.Entry<MessageQueueImpl, ProcessQueue> entry : processQueueTable.entrySet()) {
+            // 消息队列实例，代表当前正在处理的消息队列
             final MessageQueueImpl mq = entry.getKey();
+            // 消息处理队列实例，代表与当前消息队列相关联的消息处理队列
             final ProcessQueue pq = entry.getValue();
+            // 如果消息队列的主题与指定的主题不匹配，继续下一个循环
             if (!topic.equals(mq.getTopic())) {
                 continue;
             }
-
+            // 如果最新的分配情况中不包含当前的消息队列，说明该消息队列已经被停用
             if (!latest.contains(mq)) {
                 log.info("Drop message queue according to the latest assignmentList, mq={}, clientId={}", mq,
                     clientId);
                 dropProcessQueue(mq);
                 continue;
             }
-
+            // 如果消息处理队列已过期，则删除该消息队列的处理队列
             if (pq.expired()) {
                 log.warn("Drop message queue because it is expired, mq={}, clientId={}", mq, clientId);
                 dropProcessQueue(mq);
                 continue;
             }
+            // 添加到活跃的消息队列集合中
             activeMqs.add(mq);
         }
 
@@ -361,9 +370,11 @@ class PushConsumerImpl extends ConsumerImpl implements PushConsumer {
             if (activeMqs.contains(mq)) {
                 continue;
             }
+            // 若之前不存在，则创建消息队列的处理队列，并检查是否成功创建
             final Optional<ProcessQueue> optionalProcessQueue = createProcessQueue(mq, filterExpression);
             if (optionalProcessQueue.isPresent()) {
                 log.info("Start to fetch message from remote, mq={}, clientId={}", mq, clientId);
+                // Start to fetch messages from remote immediately.
                 optionalProcessQueue.get().fetchMessageImmediately();
             }
         }
@@ -373,34 +384,44 @@ class PushConsumerImpl extends ConsumerImpl implements PushConsumer {
     void scanAssignments() {
         try {
             log.debug("Start to scan assignments periodically, clientId={}", clientId);
+            // 遍历订阅表达式的集合
             for (Map.Entry<String, FilterExpression> entry : subscriptionExpressions.entrySet()) {
                 final String topic = entry.getKey();
                 final FilterExpression filterExpression = entry.getValue();
+                // 获取当前主题的分配情况
                 final Assignments existed = cacheAssignments.get(topic);
+                // 查询最新的分配情况
                 final ListenableFuture<Assignments> future = queryAssignment(topic);
                 Futures.addCallback(future, new FutureCallback<Assignments>() {
                     @Override
                     public void onSuccess(Assignments latest) {
+                        // 如果最新的分配结果为空
                         if (latest.getAssignmentList().isEmpty()) {
+                            // 如果之前的分配结果也为空，则暂时不做处理，记录日志信息
                             if (null == existed || existed.getAssignmentList().isEmpty()) {
                                 log.info("Acquired empty assignments from remote, would scan later, topic={}, "
                                     + "clientId={}", topic, clientId);
                                 return;
                             }
+                            // 如果之前的分配结果不为空，但最新的分配结果为空，记录警告日志信息
                             log.info("Attention!!! acquired empty assignments from remote, but existed assignments"
                                 + " is not empty, topic={}, clientId={}", topic, clientId);
                         }
-
+                        // 如果最新的分配结果与之前的不同
                         if (!latest.equals(existed)) {
                             log.info("Assignments of topic={} has changed, {} => {}, clientId={}", topic, existed,
                                 latest, clientId);
+                            // 同步处理消息队列
                             syncProcessQueue(topic, latest, filterExpression);
+                            // 存入本地缓存
                             cacheAssignments.put(topic, latest);
                             return;
                         }
+                        // 如果最新的分配结果与之前的相同，记录调试日志信息
                         log.debug("Assignments of topic={} remains the same, assignments={}, clientId={}", topic,
                             existed, clientId);
                         // Process queue may be dropped, need to be synchronized anyway.
+                        // 无论是否有变化，都需要同步处理消息队列
                         syncProcessQueue(topic, latest, filterExpression);
                     }
 

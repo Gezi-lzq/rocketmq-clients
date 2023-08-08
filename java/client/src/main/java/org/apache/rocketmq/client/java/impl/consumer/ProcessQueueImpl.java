@@ -178,6 +178,7 @@ class ProcessQueueImpl implements ProcessQueue {
      * <p> Make sure that no exception will be thrown.
      */
     public void onReceiveMessageException(Throwable t, String attemptId) {
+        // If flow control occurs during message receiving, consumer will retry after 20 milliseconds, otherwise go to step3.
         Duration delay = t instanceof TooManyRequestsException ? RECEIVING_FLOW_CONTROL_BACKOFF_DELAY :
             RECEIVING_FAILURE_BACKOFF_DELAY;
         receiveMessageLater(delay, attemptId);
@@ -227,6 +228,7 @@ class ProcessQueueImpl implements ProcessQueue {
 
     private void receiveMessageImmediately(String attemptId) {
         final ClientId clientId = consumer.getClientId();
+        // 检查消费者是否正在运行，如果不是则停止接收消息
         if (!consumer.isRunning()) {
             log.info("Stop to receive message because consumer is not running, mq={}, clientId={}", mq, clientId);
             return;
@@ -235,20 +237,24 @@ class ProcessQueueImpl implements ProcessQueue {
             final Endpoints endpoints = mq.getBroker().getEndpoints();
             final int batchSize = this.getReceptionBatchSize();
             final Duration longPollingTimeout = consumer.getPushConsumerSettings().getLongPollingTimeout();
+            // 创建接收消息的请求对象
             final ReceiveMessageRequest request = consumer.wrapReceiveMessageRequest(batchSize, mq, filterExpression,
                 longPollingTimeout, attemptId);
             activityNanoTime = System.nanoTime();
 
             // Intercept before message reception.
+            // 在消息接收之前进行拦截
             final MessageInterceptorContextImpl context = new MessageInterceptorContextImpl(MessageHookPoints.RECEIVE);
             consumer.doBefore(context, Collections.emptyList());
 
+            // 异步地接收消息
             final ListenableFuture<ReceiveMessageResult> future = consumer.receiveMessage(request, mq,
                 longPollingTimeout);
             Futures.addCallback(future, new FutureCallback<ReceiveMessageResult>() {
                 @Override
                 public void onSuccess(ReceiveMessageResult result) {
                     // Intercept after message reception.
+                    // 在消息接收之后进行拦截
                     final List<GeneralMessage> generalMessages = result.getMessageViewImpls().stream()
                         .map((Function<MessageView, GeneralMessage>) GeneralMessageImpl::new)
                         .collect(Collectors.toList());
@@ -257,6 +263,7 @@ class ProcessQueueImpl implements ProcessQueue {
                     consumer.doAfter(context0, generalMessages);
 
                     try {
+                        // 处理接收到的消息结果
                         onReceiveMessageResult(result);
                     } catch (Throwable t) {
                         // Should never reach here.
@@ -271,11 +278,13 @@ class ProcessQueueImpl implements ProcessQueue {
                     String nextAttemptId = null;
                     if (t instanceof StatusRuntimeException) {
                         StatusRuntimeException exception = (StatusRuntimeException) t;
+                        // 检查是否是超时异常
                         if (io.grpc.Status.DEADLINE_EXCEEDED.equals(exception.getStatus())) {
                             nextAttemptId = request.getAttemptId();
                         }
                     }
                     // Intercept after message reception.
+                    // 在消息接收之后进行拦截
                     final MessageInterceptorContextImpl context0 =
                         new MessageInterceptorContextImpl(context, MessageHookPointsStatus.ERROR);
                     consumer.doAfter(context0, Collections.emptyList());
@@ -283,10 +292,13 @@ class ProcessQueueImpl implements ProcessQueue {
                     log.error("Exception raised during message reception, mq={}, endpoints={}, attemptId={}, " +
                             "nextAttemptId={}, clientId={}", mq, endpoints, request.getAttemptId(), nextAttemptId,
                         clientId, t);
+
                     onReceiveMessageException(t, nextAttemptId);
                 }
             }, MoreExecutors.directExecutor());
+            // 增加接收消息的计数
             receptionTimes.getAndIncrement();
+            // 跟踪消费者实例接收的总消息数量
             consumer.getReceptionTimes().getAndIncrement();
         } catch (Throwable t) {
             log.error("Exception raised during message reception, mq={}, clientId={}", mq, clientId, t);
@@ -349,6 +361,7 @@ class ProcessQueueImpl implements ProcessQueue {
         final List<MessageViewImpl> messages = result.getMessageViewImpls();
         if (!messages.isEmpty()) {
             cacheMessages(messages);
+            // 增加接收到的消息数量
             receivedMessagesQuantity.getAndAdd(messages.size());
             consumer.getReceivedMessagesQuantity().getAndAdd(messages.size());
             consumer.getConsumeService().consume(this, messages);
